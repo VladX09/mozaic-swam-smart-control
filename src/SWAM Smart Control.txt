@@ -1,0 +1,557 @@
+// ==================================================================================
+// SWAM Smart Control
+// A/B state morph controller for SWAM instruments
+// - 10 parameters, each with A and B values per scene
+// - 4 scenes (Pads 0-3)
+// - Shift button: tap to toggle A/B edit mode; hold for reset gestures:
+//     <1s  : toggle A/B (normal)         pads: current A/B color
+//     1–2s : zero current state (A or B) pads: light blue
+//     2–3s : zero both states of scene   pads: yellow
+//     >3s  : zero all scenes + compressor pads: red
+// - AU Param 0 (or CC 10 on ch16) morphs A→B with compression
+// - XY Pad: X = morph scale, Y = morph center
+// --- Full parameter map ---
+// | Name                 | Mozaic Control | Input signal      | Output signal      |
+// |----------------------|----------------|-------------------|--------------------|
+// | Vibrato Depth        | Knob 5         | CC 15             | CC 15              |
+// | Vibrato Freq         | Knob 0         | CC 16             | CC 16              |
+// | Tremolo / Mute Move  | Knob 6         | CC 17             | CC 17              |
+// | Tremolo Freq         | Knob 1         | CC 18             | CC 18              |
+// | Bow Position / Growl | Knob 7         | CC 19             | CC 19              |
+// | Bow Pressure         | Knob 2         | CC 20             | CC 20              |
+// | Flutter              | Knob 8         | CC 21             | CC 21              |
+// | Keys Sound           | Knob 4         | CC 23             | CC 23              |
+// | Breath Sound         | Knob 9         | CC 25             | CC 25              |
+// | Harmonics            | Knob 3         | CC 27             | CC 27              |
+// | State A              | Switch Btn     | CC 12             | -                  |
+// | State B              | Switch Btn     | CC 13             | -                  |
+// | Shift (hw button)    | Switch Btn     | CC 14 (127/0)     | -                  |
+// | State Morph          | AU Param 0     | CC 11             | -                  |
+// | Scene 1              | Pad 0          | Note 0            | -                  |
+// | Scene 2              | Pad 1          | Note 1            | -                  |
+// | Scene 3              | Pad 2          | Note 2            | -                  |
+// | Scene 4              | Pad 3          | Note 3            | -                  |
+// | Scene Select         | AU Param 1     | CC 2              | -                  |
+// | Compressor Center    | XY Pad: Y      | CC 30             | -                  |
+// | Compressor Scale     | XY Pad: X      | CC 31             | -                  |
+// ==================================================================================
+
+@Description
+  SWAM Smart Control
+  Pads: select scene (1-4)
+  Shift tap: toggle A/B edit mode
+  Shift hold 1-2s: zero current state    (pads: blue)
+  Shift hold 2-3s: zero current scene    (pads: yellow)
+  Shift hold >3s:  zero all + reset comp (pads: red)
+  Knobs: set param value for current state
+  XY: X=morph Scale, Y=morph Center
+  AU Param 0 / CC 10: State Morph (A->B)
+@End
+
+// ============================================================
+// Initialization
+// ============================================================
+
+@OnLoad
+  ShowLayout 0        // Mix layout: 4 pads, 10 knobs, XY pad
+  SetShortName {SWAM}
+
+  // --- Output / control channels ---
+  OUTPUT_CHANNEL  = 0   // MIDI channel 1
+  CONTROL_CHANNEL = 0   // MIDI channel 1
+
+  // --- Special control CC numbers (on CONTROL_CHANNEL) ---
+  CC_MORPH         = 11
+  CC_STATE_A       = 12
+  CC_STATE_B       = 13
+  CC_SHIFT         = 14
+  CC_SCENE_SELECT  = 2
+  CC_COMP_SCALE    = 31
+  CC_COMP_CENTER   = 30
+
+  // --- Counts ---
+  NUM_PARAMS = 10
+  NUM_SCENES = 4
+
+  // --- Param mapping: index → (Mozaic knob, input CC, output CC) ---
+  // Param 0: Vibrato Depth
+  knobIndex[0] = 5
+  inputCC[0]   = 15
+  outputCC[0]  = 15
+  // Param 1: Vibrato Freq
+  knobIndex[1] = 0
+  inputCC[1]   = 16
+  outputCC[1]  = 16
+  // Param 2: Tremolo / Mute Move
+  knobIndex[2] = 6
+  inputCC[2]   = 17
+  outputCC[2]  = 17
+  // Param 3: Tremolo Freq
+  knobIndex[3] = 1
+  inputCC[3]   = 18
+  outputCC[3]  = 18
+  // Param 4: Bow Position / Growl
+  knobIndex[4] = 7
+  inputCC[4]   = 19
+  outputCC[4]  = 19
+  // Param 5: Bow Pressure
+  knobIndex[5] = 2
+  inputCC[5]   = 20
+  outputCC[5]  = 20
+  // Param 6: Flutter
+  knobIndex[6] = 8
+  inputCC[6]   = 21
+  outputCC[6]  = 21
+  // Param 7: Keys Sound
+  knobIndex[7] = 4
+  inputCC[7]   = 23
+  outputCC[7]  = 23
+  // Param 8: Breath Sound
+  knobIndex[8] = 9
+  inputCC[8]   = 25
+  outputCC[8]  = 25
+  // Param 9: Harmonics
+  knobIndex[9] = 3
+  inputCC[9]   = 27
+  outputCC[9]  = 27
+
+  // --- Build reverse-lookup tables from mapping above ---
+  FillArray ccToParam, -1, 128
+  FillArray knobToParam, -1, 22
+  for i = 0 to 9
+    ccToParam[inputCC[i]]     = i
+    knobToParam[knobIndex[i]] = i
+  endfor
+
+  // --- GUI labels (ordered by param index 0-9) ---
+  LabelKnobs {Parameters}
+  LabelKnob knobIndex[0], {Vibr Depth}
+  LabelKnob knobIndex[1], {Vibr Freq}
+  LabelKnob knobIndex[2], {Trem/Mute}
+  LabelKnob knobIndex[3], {Trem Freq}
+  LabelKnob knobIndex[4], {Bow/Growl}
+  LabelKnob knobIndex[5], {Bow Press}
+  LabelKnob knobIndex[6], {Flutter}
+  LabelKnob knobIndex[7], {Keys Snd}
+  LabelKnob knobIndex[8], {Breath}
+  LabelKnob knobIndex[9], {Harmonics}
+
+  LabelPads {Scenes}
+  LabelPad 0, {Scene 1}
+  LabelPad 1, {Scene 2}
+  LabelPad 2, {Scene 3}
+  LabelPad 3, {Scene 4}
+
+  LabelXY {Scale / Center}
+
+  // --- Persistent state: preserved across preset reloads ---
+  // stateA[scene * 10 + param] = State A value
+  // stateB[scene * 10 + param] = State B value
+  if Unassigned currentScene
+    currentScene = 0
+    FillArray stateA, 0    // default: A = 0 (min)
+    FillArray stateB, 0  // default: B = 0 (min)
+    morphRaw   = 0
+    compScale  = 127       // 100% scale
+    compCenter = 64        // 50% center
+    shiftState = NO        // NO = editing A, YES = editing B
+  endif
+
+  // --- Shift-hold timer (always reset, not persisted) ---
+  holdCounter = 0
+  StopTimer
+  SetTimerInterval 500
+
+  // --- Refresh GUI to match restored state ---
+  Call @SelectScene
+  SetXYValues compScale, compCenter
+  Call @DoMorph
+@End
+
+// ============================================================
+// GUI Events
+// ============================================================
+
+@OnKnobChange
+  k        = LastKnob
+  paramIdx = knobToParam[k]
+  if paramIdx = -1
+    Exit
+  endif
+  paramVal = Round GetKnobValue k
+  Call @SetParamValue
+@End
+
+@OnPadDown
+  p = LastPad
+  if p >= 0 AND p <= 3
+    currentScene = p
+    Call @SelectScene
+    Call @DoMorph
+  endif
+@End
+
+@OnShiftDown
+  Call @DoShiftDown
+@End
+
+@OnShiftUp
+  Call @DoShiftUp
+@End
+
+@OnTimer
+  Inc holdCounter
+  FlashUserLed
+  // Color all pads to signal which reset mode will activate on release
+  if holdCounter = 2
+    for i = 0 to 3
+      ColorPad i, 4   // light blue: reset current state
+    endfor
+  endif
+  if holdCounter = 4
+    for i = 0 to 3
+      ColorPad i, 2   // yellow: reset current scene
+    endfor
+  endif
+  if holdCounter = 6
+    for i = 0 to 3
+      ColorPad i, 1   // red: reset all scenes
+    endfor
+  endif
+@End
+
+@OnXYChange
+  compScale  = GetXValue
+  compCenter = GetYValue
+  Call @DoMorph
+@End
+
+// ============================================================
+// AU Parameter Events
+// ============================================================
+
+@OnAUParameter
+  if LastAUParameter = 0
+    tmp      = Round GetAUParameter 0
+    morphRaw = Clip tmp, 0, 127
+    Call @DoMorph
+  endif
+  if LastAUParameter = 1
+    tmp            = Round GetAUParameter 1
+    sceneSelectVal = Clip tmp, 0, 127
+    Call @DoSceneSelect
+  endif
+@End
+
+// ============================================================
+// MIDI Passthrough
+// Forwards every message that this script doesn't consume.
+// On CONTROL_CHANNEL, only the specific reserved CCs and scene
+// notes (0-3) are blocked; everything else passes through.
+// Param CC changes trigger their mapped output CC via @DoMorph
+// instead of forwarding the original CC.
+// ============================================================
+
+@OnMidiInput
+  if MIDIChannel <> CONTROL_CHANNEL
+    SendMIDIThru
+    Exit
+  endif
+
+  // CONTROL_CHANNEL CC: block reserved/param CCs, forward the rest
+  if MIDICommand = 0xB0
+    cc = MIDIByte2
+    if cc = CC_MORPH
+      Exit
+    endif
+    if cc = CC_COMP_SCALE
+      Exit
+    endif
+    if cc = CC_COMP_CENTER
+      Exit
+    endif
+    if cc = CC_STATE_A
+      Exit
+    endif
+    if cc = CC_STATE_B
+      Exit
+    endif
+    if cc = CC_SHIFT
+      Exit
+    endif
+    if cc = CC_SCENE_SELECT
+      Exit
+    endif
+    if ccToParam[cc] <> -1
+      Exit   // param CC: output CC is sent by @DoMorph instead
+    endif
+    SendMIDIThru
+    Exit
+  endif
+
+  // CONTROL_CHANNEL Note On/Off for scene-select notes 0-3: block
+  if MIDICommand = 0x90
+    if MIDIByte2 <= 3
+      Exit
+    endif
+  endif
+  if MIDICommand = 0x80
+    if MIDIByte2 <= 3
+      Exit
+    endif
+  endif
+
+  // All other CONTROL_CHANNEL messages: forward
+  SendMIDIThru
+@End
+
+// ============================================================
+// MIDI CC Input (CONTROL_CHANNEL only)
+// ============================================================
+
+@OnMidiCC
+  if MIDIChannel <> CONTROL_CHANNEL
+    Exit
+  endif
+  cc  = MIDIByte2
+  val = MIDIByte3
+
+  // Morph control
+  if cc = CC_MORPH
+    morphRaw = val
+    Call @DoMorph
+    Exit
+  endif
+
+  // Compressor Scale (XY X axis)
+  if cc = CC_COMP_SCALE
+    compScale = val
+    SetXYValues compScale, compCenter
+    Call @DoMorph
+    Exit
+  endif
+
+  // Compressor Center (XY Y axis)
+  if cc = CC_COMP_CENTER
+    compCenter = val
+    SetXYValues compScale, compCenter
+    Call @DoMorph
+    Exit
+  endif
+
+  // State A switch (shift off)
+  if cc = CC_STATE_A
+    shiftState = NO
+    Call @UpdateKnobs
+    Call @ReColorPads
+    Exit
+  endif
+
+  // State B switch (shift on)
+  if cc = CC_STATE_B
+    shiftState = YES
+    Call @UpdateKnobs
+    Call @ReColorPads
+    Exit
+  endif
+
+  // Hardware shift button (CC 14: 127=down, 0=up)
+  if cc = CC_SHIFT
+    if val = 127
+      Call @DoShiftDown
+    else
+      Call @DoShiftUp
+    endif
+    Exit
+  endif
+
+  // Scene select (CC 2: 0-31=scene1, 32-63=scene2, 64-95=scene3, 96-127=scene4)
+  if cc = CC_SCENE_SELECT
+    sceneSelectVal = val
+    Call @DoSceneSelect
+    Exit
+  endif
+
+  // Param controls
+  paramIdx = ccToParam[cc]
+  if paramIdx = -1
+    Exit
+  endif
+  paramVal = val
+  Call @SetParamValue
+  // Sync knob to the new value
+  SetKnobValue knobIndex[paramIdx], val
+@End
+
+// ============================================================
+// MIDI Note Input (scene select via Notes 0-3 on CONTROL_CHANNEL)
+// ============================================================
+
+@OnMidiNoteOn
+  if MIDIChannel <> CONTROL_CHANNEL
+    Exit
+  endif
+  if MIDINote >= 0 AND MIDINote <= 3
+    currentScene = MIDINote
+    Call @SelectScene
+    Call @DoMorph
+  endif
+@End
+
+// ============================================================
+// Subroutines
+// ============================================================
+
+// Shift-down logic: start hold timer (action deferred to @DoShiftUp)
+@DoShiftDown
+  holdCounter = 0
+  StartTimer
+@End
+
+// Shift-up logic: stop timer, perform action based on hold duration
+@DoShiftUp
+  StopTimer
+
+  if holdCounter < 2
+    // Short tap (<1s): toggle A/B edit state
+    if shiftState = YES
+      shiftState = NO
+    else
+      shiftState = YES
+    endif
+
+  elseif holdCounter <= 3
+    // 1–2s: reset current state (A or B) for current scene to 0
+    for i = 0 to 9
+      idx = currentScene * 10 + i
+      if shiftState = YES
+        stateB[idx] = 0
+      else
+        stateA[idx] = 0
+      endif
+    endfor
+    Call @DoMorph
+
+  elseif holdCounter <= 5
+    // 2–3s: reset both A and B for current scene to 0
+    for i = 0 to 9
+      idx = currentScene * 10 + i
+      stateA[idx] = 0
+      stateB[idx] = 0
+    endfor
+    Call @DoMorph
+
+  else
+    // >3s: reset all scenes, restore compressor defaults, go to scene 1
+    FillArray stateA, 0
+    FillArray stateB, 0
+    compScale  = 127
+    compCenter = 64
+    SetXYValues compScale, compCenter
+    currentScene = 0
+    Call @DoMorph
+  endif
+
+  holdCounter = 0
+  Call @SelectScene    // restores latch state and knob visuals
+  Call @ReColorPads    // restores pad colors to match current shiftState
+@End
+
+// Color inactive pads to show which state we are editing
+@ReColorPads
+  if shiftState = YES
+    color = 5  // Purple for B
+  else
+    color = 0  // White for A
+  endif
+
+  for i = 0 to 3
+    ColorPad i, color
+  endfor
+@End
+
+// Map sceneSelectVal (0-127) to scene 0-3, switch if changed
+@DoSceneSelect
+  newScene = Div sceneSelectVal, 32
+  newScene = Clip newScene, 0, 3
+  if newScene <> currentScene
+    currentScene = newScene
+    Call @SelectScene
+    Call @DoMorph
+  endif
+@End
+
+// Select current scene: update pad colors and knob positions
+@SelectScene
+  for i = 0 to 3
+    LatchPad i, NO
+  endfor
+  LatchPad currentScene, YES
+  Call @UpdateKnobs
+@End
+
+// Sync knob visuals to the current scene's A or B values
+@UpdateKnobs
+  for i = 0 to 9
+    k   = knobIndex[i]
+    idx = currentScene * 10 + i
+    if shiftState = YES
+      SetKnobValue k, stateB[idx]
+    else
+      SetKnobValue k, stateA[idx]
+    endif
+  endfor
+@End
+
+// Store paramVal into state A or B (paramIdx, paramVal must be set by caller)
+@SetParamValue
+  idx = currentScene * 10 + paramIdx
+  if shiftState = YES
+    stateB[idx] = paramVal
+  else
+    stateA[idx] = paramVal
+  endif
+  Call @DoMorph
+@End
+
+// Compute morphStart / morphEnd from compScale and compCenter.
+// These define the range that the incoming morph signal (0-127)
+// gets translated into before driving the A→B blend.
+// Scale=100%, Center=50% → [0, 127] (no compression)
+// Scale=50%,  Center=70% → [57, 121]
+@ComputeMorphRange
+  halfAmp    = compScale / 2
+
+  tmp        = compCenter - halfAmp
+  morphStart = RoundDown tmp
+  morphStart = Clip morphStart, 0, 127
+
+  tmp      = compCenter + halfAmp
+  morphEnd = RoundUp tmp
+  morphEnd = Clip morphEnd, 0, 127
+@End
+
+// Send all 10 output CCs interpolated A→B by morphRaw.
+// The incoming morphRaw (0-127) is first translated into
+// [morphStart, morphEnd], then that value drives the blend.
+// Explicit interpolation handles both aVal < bVal and aVal > bVal.
+@DoMorph
+  Call @ComputeMorphRange
+
+  // Compress incoming morph signal: [0,127] → [morphStart, morphEnd]
+  if morphStart < morphEnd
+    morphComp = TranslateScale morphRaw, 0, 127, morphStart, morphEnd
+  else
+    morphComp = morphStart   // Scale=0: fixed at center point
+  endif
+
+  for i = 0 to 9
+    idx    = currentScene * 10 + i
+    aVal   = stateA[idx]
+    bVal   = stateB[idx]
+    dParam = bVal - aVal
+    outVal = Round aVal + dParam * morphComp / 127
+    outVal = Clip outVal, 0, 127
+    SendMIDICC OUTPUT_CHANNEL, outputCC[i], outVal
+  endfor
+@End
